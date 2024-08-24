@@ -49,3 +49,5 @@ dist/**
 package.nls.*.json
 l10n/
 python-env-tools/**
+.virtual_documents/**
+*/.ipynb_checkpoints/**
