@@ -2,7 +2,7 @@ import pandas as pd
 import torch
 from torch import nn
 import torch.nn.functional as F
-import os, glob, math
+import os, glob, math, datetime
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Dataset
 from torch.nn.utils.rnn import pad_sequence
@@ -119,7 +119,7 @@ if __name__ == "__main__":
     num_epochs = 10
     model.train()
     for epoch in range(num_epochs):
-        print(f"start training epoch {epoch}...")
+        print(f"{datetime.datetime.now().isoformat()}: start training epoch {epoch+1}...")
         for inputs, labels in train_loader:
             inputs, labels = inputs.to(device), labels.to(device)
             optimizer.zero_grad()
@@ -145,3 +145,5 @@ if __name__ == "__main__":
         
         print(f'Epoch {epoch+1}, Loss: {val_loss/len(val_loader)}, Accuracy: {100 * correct / total}%')
         model.train()
+        
+    torch.save(model.state_dict(), "model_state.pth")
