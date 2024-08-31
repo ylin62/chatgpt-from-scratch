@@ -56,14 +56,19 @@ class CustomTransformerModel(nn.Module):
     def __init__(self, vocab_size, d_model, nhead, num_encoder_layers, num_classes):
         super(CustomTransformerModel, self).__init__()
         self.embedding = nn.Embedding(vocab_size, d_model)
-        self.pos_encoder = PositionalEncoding(d_model)
-        encoder_layers = nn.TransformerEncoderLayer(d_model, nhead, batch_first=True)
+        # self.pos_encoder = PositionalEncoding(d_model)
+        self.positional_embedding = nn.Embedding(max_length, d_model)
+        encoder_layers = nn.TransformerEncoderLayer(d_model, nhead, batch_first=True, dropout=DROPOUT)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layers, num_encoder_layers)
         self.fc = nn.Linear(d_model, num_classes)
+        # self.batch_norm = nn.BatchNorm1d(d_model)
     
     def forward(self, src):
-        src = self.embedding(src) * math.sqrt(self.embedding.embedding_dim)
-        src = self.pos_encoder(src)
+        src_positions = torch.arange(0, src.size(1), device=src.device).unsqueeze(0).expand(src.size(0), -1)
+        # src = self.embedding(src) * math.sqrt(self.embedding.embedding_dim)
+        src = self.embedding(src) + self.positional_embedding(src_positions)
+        # src = self.pos_encoder(src)
+        # src = self.batch_norm(src)
         output = self.transformer_encoder(src)
         output = output.mean(dim=1)  # Global average pooling
         output = self.fc(output)
@@ -80,18 +85,34 @@ if __name__ == "__main__":
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
+    DROPOUT = 0.2
+    BATCH_SIZE = 32
+    D_MODEL = 16
+    EPOCH = 50
+    
     file = glob.glob(os.path.expanduser("~/Documents/projects/chatgpt-from-scratch/data/*.csv"))[0]
     df = pd.read_csv(file, index_col=0).dropna(how="any", axis=0)
     
-    max_length = int(df["statement"].apply(len).quantile(0.6))
+    threshold = df.groupby("status").count().quantile(0.7)
+    for status in df["status"].unique():
+        _data = df[df["status"] == status]
+        if len(_data) < threshold.values[0]:
+            print(f"{status}, {len(_data)}")
+            n = threshold.values[0] // len(_data)
+            for _ in range(int(n)):
+                df = pd.concat((df, _data))
+                
+    print(f"data shape: {df.shape}")
+            
+    max_length = int(df["statement"].apply(len).quantile(0.9))
     
     temp_set = set()
     for item in df["statement"].apply(set):
         temp_set = temp_set | item
    
-    vocab_size = len(temp_set)
+    vocab_size = len(temp_set) + 1
     
-    encoder = {s: i for i, s in enumerate(temp_set)}
+    encoder = {s: i+1 for i, s in enumerate(sorted(temp_set))}
     
     statements = df["statement"].values
     labels = df["status"].values
@@ -105,28 +126,31 @@ if __name__ == "__main__":
     val_dataset = SentimentDataset(val_statements, val_labels, tokenizer=simple_tokenizer, max_length=max_length)
 
     # Data loaders
-    train_loader = DataLoader(train_dataset, batch_size=16, collate_fn=collate_fn, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=16, collate_fn=collate_fn)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, collate_fn=collate_fn, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, collate_fn=collate_fn)
     
     # Instantiate the model
-    model = CustomTransformerModel(vocab_size=vocab_size, d_model=256, nhead=8, num_encoder_layers=6, num_classes=len(label_encoder.classes_)).to(device)
+    model = CustomTransformerModel(vocab_size=vocab_size, d_model=D_MODEL, nhead=2, num_encoder_layers=1, num_classes=len(label_encoder.classes_)).to(device)
 
     # Define loss function and optimizer
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.0005, weight_decay=1e-5)
 
     # Training loop
-    num_epochs = 10
+    num_epochs = EPOCH
     model.train()
     for epoch in range(num_epochs):
         print(f"{datetime.datetime.now().isoformat()}: start training epoch {epoch+1}...")
+        total_losses = 0
         for inputs, labels in train_loader:
             inputs, labels = inputs.to(device), labels.to(device)
             optimizer.zero_grad()
             outputs = model(inputs)
             loss = criterion(outputs, labels)
+            total_losses += loss
             loss.backward()
             optimizer.step()
+            training_loss = loss/len(train_loader)
         
         # Optional: Evaluate on the validation set after each epoch
         model.eval()
@@ -143,7 +167,7 @@ if __name__ == "__main__":
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
         
-        print(f'Epoch {epoch+1}, Loss: {val_loss/len(val_loader)}, Accuracy: {100 * correct / total}%')
+        print(f'Epoch {epoch+1}, training loss: {training_loss}; Validation Loss: {val_loss/len(val_loader)}, Accuracy: {100 * correct / total}%')
         model.train()
         
     torch.save(model.state_dict(), "model_state.pth")
