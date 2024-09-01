@@ -58,7 +58,7 @@ class CustomTransformerModel(nn.Module):
         self.embedding = nn.Embedding(vocab_size, d_model)
         # self.pos_encoder = PositionalEncoding(d_model)
         self.positional_embedding = nn.Embedding(max_length, d_model)
-        encoder_layers = nn.TransformerEncoderLayer(d_model, nhead, batch_first=True, dropout=DROPOUT)
+        encoder_layers = nn.TransformerEncoderLayer(d_model, nhead, batch_first=True, dropout=DROPOUT, dim_feedforward=2048)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layers, num_encoder_layers)
         self.fc = nn.Linear(d_model, num_classes)
         # self.batch_norm = nn.BatchNorm1d(d_model)
@@ -104,7 +104,7 @@ if __name__ == "__main__":
                 
     print(f"data shape: {df.shape}")
             
-    max_length = int(df["statement"].apply(len).quantile(0.9))
+    max_length = int(df["statement"].apply(len).quantile(0.8))
     
     temp_set = set()
     for item in df["statement"].apply(set):
@@ -130,17 +130,17 @@ if __name__ == "__main__":
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, collate_fn=collate_fn)
     
     # Instantiate the model
-    model = CustomTransformerModel(vocab_size=vocab_size, d_model=D_MODEL, nhead=2, num_encoder_layers=1, num_classes=len(label_encoder.classes_)).to(device)
+    model = CustomTransformerModel(vocab_size=vocab_size, d_model=D_MODEL, nhead=2, num_encoder_layers=2, num_classes=len(label_encoder.classes_)).to(device)
 
     # Define loss function and optimizer
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.0005, weight_decay=1e-5)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.0001, weight_decay=1e-5)
 
     # Training loop
     num_epochs = EPOCH
     model.train()
     for epoch in range(num_epochs):
-        print(f"{datetime.datetime.now().isoformat()}: start training epoch {epoch+1}...")
+        print(f"{datetime.datetime.now().strftime('%H:%M:%S %p')}: start training epoch {epoch+1}...")
         total_losses = 0
         for inputs, labels in train_loader:
             inputs, labels = inputs.to(device), labels.to(device)
@@ -167,7 +167,7 @@ if __name__ == "__main__":
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
         
-        print(f'Epoch {epoch+1}, training loss: {training_loss}; Validation Loss: {val_loss/len(val_loader)}, Accuracy: {100 * correct / total}%')
+        print(f'Epoch {epoch+1}, training loss: {training_loss:.6f}; Validation Loss: {val_loss/len(val_loader):.6f}, Accuracy: {100 * correct / total:.2f}%')
         model.train()
         
     torch.save(model.state_dict(), "model_state.pth")
