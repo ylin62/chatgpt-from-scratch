@@ -8,6 +8,12 @@ from torch.utils.data import DataLoader, Dataset
 from torch.nn.utils.rnn import pad_sequence
 from sklearn.preprocessing import LabelEncoder
 
+from tokenizers import Tokenizer
+from tokenizers.models import BPE
+from tokenizers.trainers import BpeTrainer
+from tokenizers.pre_tokenizers import Whitespace
+from tqdm import tqdm
+
 class SentimentDataset(Dataset):
     def __init__(self, statements, labels, tokenizer, max_length=1000):
         self.statements = statements
@@ -75,10 +81,12 @@ class CustomTransformerModel(nn.Module):
         return output
 
 
-# Assume you have a tokenizer function
-def simple_tokenizer(text):
-    return [encoder[c] for c in text]  # Simple example: convert each character to its ASCII value
+# # Assume you have a tokenizer function
+# def simple_tokenizer(text):
+#     return [encoder[c] for c in text]  # Simple example: convert each character to its ASCII value
 
+def simple_tokenizer(text):
+    return tokenizer.encode(text).ids
 
 
 if __name__ == "__main__":
@@ -87,9 +95,9 @@ if __name__ == "__main__":
     
     DROPOUT = 0.2
     BATCH_SIZE = 64
-    D_MODEL = 32
-    FF_SIZE = 16
-    EPOCH = 200
+    D_MODEL = 16
+    FF_SIZE = 8
+    EPOCH = 50
     
     file = glob.glob(os.path.expanduser("~/Documents/projects/chatgpt-from-scratch/data/*.csv"))[0]
     df = pd.read_csv(file, index_col=0).dropna(how="any", axis=0)
@@ -104,16 +112,33 @@ if __name__ == "__main__":
                 df = pd.concat((df, _data))
                 
     print(f"data shape: {df.shape}")
+    
+    texts = df["statement"].tolist()
+    
+    vocab_size = 30000
+    # tokenizer = Tokenizer(BPE(unk_token="[UNK]"))
+    # trainer = BpeTrainer(vocab_size=vocab_size, min_frequency=5, special_tokens=["[UNK]", "[CLS]", "[SEP]", "[PAD]", "[MASK]"])
+    # tokenizer.pre_tokenizer = Whitespace()
+    # tokenizer.train_from_iterator(texts, trainer=trainer)
+    print(f"Load tokenizer...")
+    tokenizer = Tokenizer.from_file("data/tokenizer-mental-health.json")
             
     max_length = int(df["statement"].apply(len).quantile(0.9))
     
-    temp_set = set()
-    for item in df["statement"].apply(set):
-        temp_set = temp_set | item
+    # temp_set = set()
+    # for item in df["statement"].apply(set):
+    #     temp_set = temp_set | item
    
-    vocab_size = len(temp_set) + 1
+    # vocab_size = len(temp_set) + 1
     
-    encoder = {s: i+1 for i, s in enumerate(sorted(temp_set))}
+    # encoder = {s: i+1 for i, s in enumerate(sorted(temp_set))}
+    
+    # vocab_size = len(temp_set) + 1
+    print(f"vocab size is: {vocab_size}")
+    
+    temp_set = set()
+    for item in tqdm(tokenizer.encode_batch(texts), desc="compute vocab size"):
+        temp_set = temp_set | set(item.ids)    
     
     statements = df["statement"].values
     labels = df["status"].values
@@ -131,7 +156,7 @@ if __name__ == "__main__":
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, collate_fn=collate_fn)
     
     # Instantiate the model
-    model = CustomTransformerModel(vocab_size=vocab_size, d_model=D_MODEL, nhead=4, num_encoder_layers=4, num_classes=len(label_encoder.classes_)).to(device)
+    model = CustomTransformerModel(vocab_size=vocab_size, d_model=D_MODEL, nhead=2, num_encoder_layers=4, num_classes=len(label_encoder.classes_)).to(device)
     
     # model_state_dict = torch.load("model_state.pth", weights_only=True)
     # model.load_state_dict(model_state_dict)
