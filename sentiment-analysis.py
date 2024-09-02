@@ -2,7 +2,7 @@ import pandas as pd
 import torch
 from torch import nn
 import torch.nn.functional as F
-import os, glob, math, datetime
+import os, glob, math, datetime, csv
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Dataset
 from torch.nn.utils.rnn import pad_sequence
@@ -58,7 +58,7 @@ class CustomTransformerModel(nn.Module):
         self.embedding = nn.Embedding(vocab_size, d_model)
         # self.pos_encoder = PositionalEncoding(d_model)
         self.positional_embedding = nn.Embedding(max_length, d_model)
-        encoder_layers = nn.TransformerEncoderLayer(d_model, nhead, batch_first=True, dropout=DROPOUT, dim_feedforward=2048)
+        encoder_layers = nn.TransformerEncoderLayer(d_model, nhead, batch_first=True, dropout=DROPOUT, dim_feedforward=FF_SIZE)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layers, num_encoder_layers)
         self.fc = nn.Linear(d_model, num_classes)
         # self.batch_norm = nn.BatchNorm1d(d_model)
@@ -86,9 +86,10 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     DROPOUT = 0.2
-    BATCH_SIZE = 32
-    D_MODEL = 16
-    EPOCH = 50
+    BATCH_SIZE = 64
+    D_MODEL = 32
+    FF_SIZE = 16
+    EPOCH = 200
     
     file = glob.glob(os.path.expanduser("~/Documents/projects/chatgpt-from-scratch/data/*.csv"))[0]
     df = pd.read_csv(file, index_col=0).dropna(how="any", axis=0)
@@ -104,7 +105,7 @@ if __name__ == "__main__":
                 
     print(f"data shape: {df.shape}")
             
-    max_length = int(df["statement"].apply(len).quantile(0.8))
+    max_length = int(df["statement"].apply(len).quantile(0.9))
     
     temp_set = set()
     for item in df["statement"].apply(set):
@@ -130,44 +131,68 @@ if __name__ == "__main__":
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, collate_fn=collate_fn)
     
     # Instantiate the model
-    model = CustomTransformerModel(vocab_size=vocab_size, d_model=D_MODEL, nhead=2, num_encoder_layers=2, num_classes=len(label_encoder.classes_)).to(device)
+    model = CustomTransformerModel(vocab_size=vocab_size, d_model=D_MODEL, nhead=4, num_encoder_layers=4, num_classes=len(label_encoder.classes_)).to(device)
+    
+    # model_state_dict = torch.load("model_state.pth", weights_only=True)
+    # model.load_state_dict(model_state_dict)
 
     # Define loss function and optimizer
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=0.0001, weight_decay=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=0)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, min_lr=1e-8)
 
     # Training loop
     num_epochs = EPOCH
     model.train()
-    for epoch in range(num_epochs):
-        print(f"{datetime.datetime.now().strftime('%H:%M:%S %p')}: start training epoch {epoch+1}...")
-        total_losses = 0
-        for inputs, labels in train_loader:
-            inputs, labels = inputs.to(device), labels.to(device)
-            optimizer.zero_grad()
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
-            total_losses += loss
-            loss.backward()
-            optimizer.step()
-            training_loss = loss/len(train_loader)
-        
-        # Optional: Evaluate on the validation set after each epoch
-        model.eval()
-        val_loss = 0
-        correct = 0
-        total = 0
-        with torch.no_grad():
-            for inputs, labels in val_loader:
-                inputs, labels = inputs.to(device), labels.to(device)        
+    
+    write = open("epoches.csv", "w")
+    writer = csv.writer(write)
+    writer.writerow([f"Dropout: {DROPOUT}, Batch_size: {BATCH_SIZE}, D_model: {D_MODEL}, Feed forward: {FF_SIZE}"])
+    
+    try:
+        for epoch in range(num_epochs):
+            print(f"{datetime.datetime.now().strftime('%H:%M:%S %p')}: start training epoch {epoch+1}...")
+            total_losses = 0
+            correct = 0
+            total = 0
+            for inputs, labels in train_loader:
+                inputs, labels = inputs.to(device), labels.to(device)
+                optimizer.zero_grad()
                 outputs = model(inputs)
                 loss = criterion(outputs, labels)
-                val_loss += loss.item()
+                loss.backward()
+                optimizer.step()
+                
+                total_losses += loss.item()                
+                
                 _, predicted = torch.max(outputs.data, 1)
-                total += labels.size(0)
                 correct += (predicted == labels).sum().item()
-        
-        print(f'Epoch {epoch+1}, training loss: {training_loss:.6f}; Validation Loss: {val_loss/len(val_loader):.6f}, Accuracy: {100 * correct / total:.2f}%')
-        model.train()
-        
-    torch.save(model.state_dict(), "model_state.pth")
+                total += labels.size(0)
+            training_loss = total_losses/len(train_loader)
+            train_accuracy = 100 * correct / total
+                  
+            # Optional: Evaluate on the validation set after each epoch
+            model.eval()
+            val_loss = 0
+            correct = 0
+            total = 0
+            with torch.no_grad():
+                for inputs, labels in val_loader:
+                    inputs, labels = inputs.to(device), labels.to(device)        
+                    outputs = model(inputs)
+                    loss = criterion(outputs, labels)
+                    val_loss += loss.item()
+                    _, predicted = torch.max(outputs.data, 1)
+                    total += labels.size(0)
+                    correct += (predicted == labels).sum().item()
+                    
+            scheduler.step(val_loss)
+            
+            print(f'Epoch {epoch+1}, Training loss: {training_loss:.6f}, Train Accuracy: {train_accuracy:.2f}%; Validation Loss: {val_loss/len(val_loader):.6f}, Accuracy: {100 * correct / total:.2f}%, Learning rate: {scheduler.get_last_lr()[0]}')
+            writer.writerow([f'Epoch {epoch+1}, Training loss: {training_loss:.6f}, Train Accuracy: {train_accuracy:.2f}%; Validation Loss: {val_loss/len(val_loader):.6f}, Accuracy: {100 * correct / total:.2f}%, Learning rate: {scheduler.get_last_lr()[0]}'])
+            model.train()
+    except KeyboardInterrupt as e:
+        raise e
+    finally:
+        write.close()
+        torch.save(model.state_dict(), "model_state.pth")
